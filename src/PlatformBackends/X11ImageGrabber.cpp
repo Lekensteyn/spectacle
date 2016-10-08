@@ -35,6 +35,7 @@
 #include <QGraphicsScene>
 #include <QGraphicsPixmapItem>
 #include <QGraphicsDropShadowEffect>
+#include <QWindow>
 
 #include <KWindowSystem>
 #include <KWindowInfo>
@@ -42,6 +43,7 @@
 #include <xcb/xcb_cursor.h>
 #include <xcb/xcb_util.h>
 #include <xcb/xfixes.h>
+#include <QDebug>
 
 X11ImageGrabber::X11ImageGrabber(QObject *parent) :
     ImageGrabber(parent)
@@ -267,29 +269,47 @@ QPixmap X11ImageGrabber::blendCursorImage(const QPixmap &pixmap, int x, int y, i
     return blendedPixmap;
 }
 
-QPixmap X11ImageGrabber::getWindowPixmap(xcb_window_t window, bool blendPointer)
+QPixmap X11ImageGrabber::getWindowPixmap(xcb_window_t winId, bool blendPointer)
 {
+    KWindowInfo info(winId, NET::WMGeometry);
+    if (!info.valid()) {
+        qDebug() << "Window geometry is unknown";
+        //return QPixmap();
+    }
+    qDebug() << "\nlokup:" << winId << info.geometry();
+
+    // QXCB does support "foreign windows", so this should return non-NULL if there is any window with this ID
+    QWindow *window = QWindow::fromWinId(winId);
+    if (!window) {
+        qDebug() << "Window went away!";
+        return QPixmap();
+    }
+
+    QScreen *screen = window->screen();
+    if (!screen) {
+        qDebug() << "Window is invisible!";
+        return QPixmap();
+    }
+    QRect windowRect = info.geometry();
+
+    // obtain an image for this window
+
+    QPixmap windowPixmap = screen->grabWindow(window->winId());
+    qDebug() << "WIN" << winId << window->winId() <<
+                QString("(%1,%2,%3,%4)").arg(windowRect.x()).arg(windowRect.y()).arg(windowRect.width()).arg(windowRect.height());
+    // if the image is null, this means we need to get the root image window
+    if (windowPixmap.isNull()) {
+        windowPixmap = screen->grabWindow(0, windowRect.x(), windowRect.y(), windowRect.width(), windowRect.height());
+        if (windowPixmap.isNull()) {
+            qDebug() << "Failed to grab the contents of window" << window << "from" << screen;
+            qDebug() << windowPixmap;
+            return QPixmap();
+        }
+        qDebug() << "Grabbed via root window";
+    }
+
+#if 0
     xcb_connection_t *xcbConn = QX11Info::connection();
-
-    // first get geometry information for our drawable
-
-    xcb_get_geometry_cookie_t geomCookie = xcb_get_geometry_unchecked(xcbConn, window);
-    CScopedPointer<xcb_get_geometry_reply_t> geomReply(xcb_get_geometry_reply(xcbConn, geomCookie, NULL));
-
-    // then proceed to get an image
-
-    CScopedPointer<xcb_image_t> xcbImage(
-        xcb_image_get(
-            xcbConn,
-            window,
-            geomReply->x,
-            geomReply->y,
-            geomReply->width,
-            geomReply->height,
-            ~0,
-            XCB_IMAGE_FORMAT_Z_PIXMAP
-        )
-    );
 
     // if the image is null, this means we need to get the root image window
     // and run a crop
@@ -302,12 +322,14 @@ QPixmap X11ImageGrabber::getWindowPixmap(xcb_window_t window, bool blendPointer)
     // now process the image
 
     QPixmap nativePixmap = convertFromNative(xcbImage.data());
+#endif
     if (!(blendPointer)) {
-        return nativePixmap;
+        return windowPixmap;
     }
 
     // now we blend in a pointer image
 
+#if 0
     xcb_get_geometry_cookie_t geomRootCookie = xcb_get_geometry_unchecked(xcbConn, geomReply->root);
     CScopedPointer<xcb_get_geometry_reply_t> geomRootReply(xcb_get_geometry_reply(xcbConn, geomRootCookie, NULL));
 
@@ -316,7 +338,9 @@ QPixmap X11ImageGrabber::getWindowPixmap(xcb_window_t window, bool blendPointer)
     CScopedPointer<xcb_translate_coordinates_reply_t> translateReply(
         xcb_translate_coordinates_reply(xcbConn, translateCookie, NULL));
 
-    return blendCursorImage(nativePixmap, translateReply->dst_x,translateReply->dst_y, geomReply->width, geomReply->height);
+    return blendCursorImage(nativePixmap, translateReply->dst_x,translateReply->dst_y, windowPixmap.width(), windowPixmap.height());
+#endif
+    return blendCursorImage(windowPixmap, window->x(), window->y(), window->width(), window->height());
 }
 
 bool X11ImageGrabber::isKWinAvailable()
